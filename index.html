@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FC26 Transfer Tracker</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="container">
+      <div class="card-head" style="margin:0; padding:0;">
+        <div>
+          <h1 id="save-title">FC26 Transfer Tracker</h1>
+          <p class="sub" id="save-sub">Track transfer cost, sale, profit and ROI per player. Data is saved locally in your browser.</p>
+        </div>
+        <div class="actions">
+          <a id="back-to-dashboard" class="btn btn-secondary" href="./dashboard.html">Back to dashboard</a>
+          <button id="edit-save-title" class="btn btn-secondary" type="button">Edit title</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card" id="edit-card">
+      <div class="card-head">
+        <h2>Add / Edit player</h2>
+        <div class="actions">
+          <div class="segmented" role="tablist" aria-label="Currency">
+            <button class="seg-btn active" data-currency="GBP" type="button">£</button>
+            <button class="seg-btn" data-currency="EUR" type="button">€</button>
+            <button class="seg-btn" data-currency="USD" type="button">$</button>
+          </div>
+
+          <button id="btn-clear" class="btn btn-secondary" type="button">Clear</button>
+          <button id="btn-cancel" class="btn btn-secondary hidden" type="button">Cancel</button>
+          <button id="btn-add" class="btn btn-primary" type="button">Add player</button>
+          <button id="btn-update" class="btn btn-primary hidden" type="button">Update player</button>
+        </div>
+      </div>
+
+      <div id="edit-player-name" class="edit-name">New Player</div>
+
+      <form id="player-form" autocomplete="off">
+        <div class="grid">
+          <label>
+            Forename
+            <input id="f-first" required placeholder="New" />
+          </label>
+
+          <label>
+            Surname
+            <input id="f-surname" required placeholder="Player" />
+          </label>
+
+          <label>
+            Seniority
+            <select id="f-seniority">
+              <option value="Senior" selected>Senior</option>
+              <option value="Youth">Youth</option>
+            </select>
+          </label>
+
+          <label>
+            Position
+            <select id="f-pos" required>
+              <option value="" selected disabled>Select…</option>
+              <option value="GK">GK</option>
+              <option value="RB">RB</option>
+              <option value="CB">CB</option>
+              <option value="LB">LB</option>
+              <option value="CDM">CDM</option>
+              <option value="CM">CM</option>
+              <option value="CAM">CAM</option>
+              <option value="LM">LM</option>
+              <option value="RM">RM</option>
+              <option value="ST">ST</option>
+            </select>
+          </label>
+
+          <label>
+            OVR (initial)
+            <input id="f-intl" type="number" min="1" max="99" step="1" required placeholder="65" />
+          </label>
+
+          <label>
+            Potential Min.
+            <input id="f-potmin" type="number" min="1" max="99" step="1" required placeholder="65" />
+          </label>
+
+          <label>
+            Potential Max.
+            <input id="f-potmax" type="number" min="1" max="99" step="1" required placeholder="90" />
+          </label>
+
+          <label>
+            Active?
+            <select id="f-active">
+              <option value="Y" selected>Y (Current squad)</option>
+              <option value="N">N (Sold)</option>
+            </select>
+          </label>
+
+          <label>
+            Cost
+            <input id="f-cost" type="text" inputmode="numeric" placeholder="0" />
+          </label>
+
+          <label>
+            Sale
+            <input id="f-sale" type="text" inputmode="numeric" placeholder="0" />
+          </label>
+        </div>
+
+        <div class="hint">
+          Display name is auto-abbreviated: <span class="mono">Joe Bloggs → J. Bloggs</span> •
+          Potential average & status are calculated automatically •
+          Status: <span class="mono">90+ Special</span>, <span class="mono">85+ Exciting</span>, <span class="mono">80+ Great</span>, else <span class="mono">Sell</span>.
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Totals</h2>
+        <div class="actions">
+          <div class="segmented" role="tablist" aria-label="Seniority filter">
+            <button class="seg-btn active" data-seniority="Senior" type="button">Senior</button>
+            <button class="seg-btn" data-seniority="Youth" type="button">Youth</button>
+            <button class="seg-btn" data-seniority="All" type="button">All</button>
+          </div>
+          <button id="btn-export" class="btn btn-secondary" type="button">Export JSON</button>
+          <label class="btn btn-secondary file-btn" for="import-file">Import JSON</label>
+          <input id="import-file" class="hidden" type="file" accept="application/json" />
+          <button id="btn-reset" class="btn btn-danger" type="button">Reset all</button>
+        </div>
+      </div>
+
+      <div class="totals">
+        <div class="total">
+          <div class="label">Total spend</div>
+          <div id="t-cost" class="value val-neg">£0</div>
+        </div>
+        <div class="total">
+          <div class="label">Total sales</div>
+          <div id="t-sale" class="value val-pos">£0</div>
+        </div>
+        <div class="total">
+          <div class="label">Total profit</div>
+          <div id="t-profit" class="value">£0</div>
+        </div>
+        <div class="total">
+          <div class="label">Average ROI</div>
+          <div id="t-roi" class="value">—</div>
+        </div>
+      </div>
+      <p class="subtle">Average ROI is computed over players with a non-zero cost and a sale value.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Players</h2>
+        <div class="actions">
+          <label class="toggle">
+            <input type="checkbox" id="toggle-ex" checked>
+            <span>Show ex-players</span>
+          </label>
+          <div class="segmented" role="tablist" aria-label="Seniority filter">
+            <button class="seg-btn active" data-seniority="Senior" type="button">Senior</button>
+            <button class="seg-btn" data-seniority="Youth" type="button">Youth</button>
+            <button class="seg-btn" data-seniority="All" type="button">All</button>
+          </div>
+          <input id="search" class="search" placeholder="Search name / position…" />
+          <select id="filter-active" class="select">
+            <option value="ALL" selected>All</option>
+            <option value="Y">Active (Y)</option>
+            <option value="N">Sold (N)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="player" class="sortable">Player</th>
+              <th data-sort="seniority" class="sortable">Seniority</th>
+              <th data-sort="position" class="sortable">Position</th>
+              <th data-sort="ovr" class="sortable">OVR</th>
+              <th data-sort="potential" class="sortable">Potential</th>
+              <th data-sort="status" class="sortable">Status</th>
+              <th>Active</th>
+              <th data-sort="cost" class="num sortable">Cost</th>
+              <th data-sort="sale" class="num sortable">Sale</th>
+              <th data-sort="profit" class="num sortable">Profit</th>
+              <th data-sort="roi" class="num sortable">ROI</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Tip: this app uses <span class="mono">localStorage</span> so it works offline and keeps your save on this device/browser.</p>
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
