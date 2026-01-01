@@ -1,27 +1,15 @@
 /* auth.js — Cognito Hosted UI (Authorization Code + PKCE)
    Stores tokens in sessionStorage (safer than localStorage).
-   Works for static sites on Amplify Hosting.
 */
 
 const Auth = (() => {
-  // ✅ EDIT THESE 4 VALUES (copy from Cognito + your Amplify domain)
+  // ✅ FILL THESE IN
   const CONFIG = {
-    // Example: https://your-domain.auth.us-east-1.amazoncognito.com
     cognitoDomain: "https://main.d38idh1saq8gux.amplifyapp.com.auth.us-east-1.amazoncognito.com",
-
-    // Cognito App client ID (NOT secret)
     clientId: "4h6ch2jh93i4e2ncc4a7s076df",
-
-    // Must match Cognito App client callback URL EXACTLY
-    // Example: https://main.xxxxx.amplifyapp.com/auth.html
-    redirectUri: `${window.location.origin}/auth.html`,
-
-    // Must match Cognito App client sign-out URL EXACTLY
-    // Example: https://main.xxxxx.amplifyapp.com
-    logoutRedirectUri: `${window.location.origin}`,
-
-    // Keep minimal
-    scopes: ["openid", "email"],
+    redirectUri: "https://main.d38idh1saq8gux.amplifyapp.com/auth.html",
+    logoutRedirectUri: "https://main.d38idh1saq8gux.amplifyapp.com",
+    scopes: ["openid", "email"], // keep minimal for privacy
   };
 
   const STORAGE = {
@@ -34,9 +22,7 @@ const Auth = (() => {
 
   function base64UrlEncode(bytes) {
     return btoa(String.fromCharCode(...bytes))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
   async function sha256(str) {
@@ -51,18 +37,12 @@ const Auth = (() => {
     return base64UrlEncode(bytes);
   }
 
-  function nowSec() {
-    return Math.floor(Date.now() / 1000);
-  }
+  function nowSec() { return Math.floor(Date.now() / 1000); }
 
-  function setSession(key, val) {
-    sessionStorage.setItem(key, val);
-  }
-  function getSession(key) {
-    return sessionStorage.getItem(key);
-  }
+  function setSession(key, val) { sessionStorage.setItem(key, val); }
+  function getSession(key) { return sessionStorage.getItem(key); }
   function clearSession() {
-    Object.values(STORAGE).forEach((k) => sessionStorage.removeItem(k));
+    Object.values(STORAGE).forEach(k => sessionStorage.removeItem(k));
   }
 
   function isLoggedIn() {
@@ -75,15 +55,14 @@ const Auth = (() => {
     return getSession(STORAGE.accessToken);
   }
 
-  async function login(returnTo = "index.html") {
+  async function login(currentPathAfterLogin = "index.html") {
     // PKCE
     const verifier = randomString(64);
     setSession(STORAGE.verifier, verifier);
 
     const challenge = base64UrlEncode(await sha256(verifier));
 
-    // We store where to return after auth in state
-    const state = encodeURIComponent(returnTo);
+    const state = encodeURIComponent(currentPathAfterLogin);
 
     const authUrl =
       `${CONFIG.cognitoDomain}/oauth2/authorize` +
@@ -101,7 +80,7 @@ const Auth = (() => {
   async function handleCallback() {
     const url = new URL(window.location.href);
     const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
+    const state = url.searchParams.get("state"); // we store return page here
     const err = url.searchParams.get("error");
 
     if (err) {
@@ -116,9 +95,7 @@ const Auth = (() => {
     }
 
     const verifier = getSession(STORAGE.verifier);
-    if (!verifier) {
-      throw new Error("Missing PKCE verifier (sessionStorage cleared). Try logging in again.");
-    }
+    if (!verifier) throw new Error("Missing PKCE verifier (sessionStorage cleared). Try logging in again.");
 
     // Exchange code for tokens
     const tokenUrl = `${CONFIG.cognitoDomain}/oauth2/token`;
@@ -137,11 +114,12 @@ const Auth = (() => {
     });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
+      const text = await resp.text();
       throw new Error(`Token exchange failed: ${resp.status} ${text}`);
     }
 
     const tokens = await resp.json();
+    // tokens: access_token, id_token, refresh_token?, expires_in
     setSession(STORAGE.accessToken, tokens.access_token);
     setSession(STORAGE.idToken, tokens.id_token || "");
     if (tokens.refresh_token) setSession(STORAGE.refreshToken, tokens.refresh_token);
@@ -149,6 +127,7 @@ const Auth = (() => {
     const exp = nowSec() + Number(tokens.expires_in || 3600);
     setSession(STORAGE.tokenExp, String(exp));
 
+    // Clean callback params and go where we came from (or dashboard)
     const next = state ? decodeURIComponent(state) : "index.html";
     window.location.replace("./" + next);
   }
@@ -164,6 +143,7 @@ const Auth = (() => {
     window.location.href = logoutUrl;
   }
 
+  // Used on protected pages
   async function requireLogin(returnTo = "index.html") {
     if (!isLoggedIn()) {
       await login(returnTo);
@@ -182,3 +162,4 @@ const Auth = (() => {
     getAccessToken,
   };
 })();
+
