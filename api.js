@@ -2,7 +2,7 @@
 
 // ✅ FILL THIS IN (your API Gateway invoke URL, no trailing slash)
 // Example: https://abc123.execute-api.eu-west-2.amazonaws.com
-const API_BASE_URL = "https://5bwgybhzz2.execute-api.us-east-1.amazonaws.com";
+const API_BASE_URL = "https://5bwgybhzz2.execute-api.us-east-1.amazonaws.com/production";
 
 async function apiFetch(path, options = {}) {
   const token = Auth.getAccessToken();
