@@ -107,7 +107,7 @@ function render(){
             <button class="icon-btn" data-save="${escapeHtml(s.id)}" type="button" title="Save">Save</button>
             <button class="icon-btn" data-cancel="${escapeHtml(s.id)}" type="button" title="Cancel">Cancel</button>
           ` : `
-            <a class="icon-btn" href="./index.html?save=${encodeURIComponent(s.id)}" title="Open">Open</a>
+            <a class="icon-btn" href="./tracker.html?save=${encodeURIComponent(s.id)}" title="Open">Open</a>
             <button class="icon-btn" data-edit="${escapeHtml(s.id)}" type="button" title="Edit name">Edit</button>
           `}
           <button class="icon-btn danger" data-del="${escapeHtml(s.id)}" type="button" title="Delete">Delete</button>
@@ -136,7 +136,7 @@ btnAdd.addEventListener("click", ()=>{
   saves.push({ id, name, createdAt: new Date().toISOString() });
   saveSaves(saves);
   localStorage.setItem(playersKey(id), JSON.stringify([]));
-  location.href = `./tracker/?save=${encodeURIComponent(id)}`;
+  location.href = `./tracker.html?save=${encodeURIComponent(id)}`;
 });
 
 rowsEl.addEventListener("click", (e)=>{
