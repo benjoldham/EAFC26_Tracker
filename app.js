@@ -2,6 +2,12 @@
 // Exchange rates source: exchangerate-api.com (open.er-api.com) base GBP.
 // Rates last updated: Tue, 23 Dec 2025 00:02:31 +0000.
 
+// ✅ Require login (Cognito) before allowing access to tracker
+if (typeof Auth !== "undefined" && !Auth.isLoggedIn() && !/\/auth\.html$/.test(location.pathname)) {
+  Auth.login(location.pathname + location.search);
+  throw new Error("Redirecting to login...");
+}
+
 
 function getDashboardUrl(){
   // Works whether this page is /tracker/ or root
@@ -9,58 +15,36 @@ function getDashboardUrl(){
   if (p.includes("/tracker/") || p.endsWith("/tracker")) return "../index.html";
   return "./index.html";
 }
-// Multi-save storage
-const SAVES_KEY = "fc26_transfer_tracker_saves_v1";
-const SAVE_PREFIX = "fc26_transfer_tracker_save_v1_";
-
-// Legacy single-save keys (pre-dashboard)
-const LEGACY_KEY_V7 = "fc26_transfer_tracker_v7";
-const LEGACY_KEY_V6 = "fc26_transfer_tracker_v6";
-
-function playersKey(saveId){ return `${SAVE_PREFIX}${saveId}_players`; }
-
-function loadSaves(){
-  try{
-    const raw = localStorage.getItem(SAVES_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  }catch{ return []; }
-}
-function saveSaves(saves){ localStorage.setItem(SAVES_KEY, JSON.stringify(saves)); }
-
-function updateSaveName(saveId, nextName){
-  const name = String(nextName || "").trim();
-  const saves = loadSaves();
-  const idx = saves.findIndex(s=>s.id===saveId);
-  if (idx === -1) return null;
-  saves[idx] = { ...saves[idx], name: name || "Untitled" };
-  saveSaves(saves);
-  return saves[idx];
-}
-
-function migrateLegacyIntoFirstSaveIfNeeded(){
-  const saves = loadSaves();
-  if (saves.length) return;
-
-  const raw = localStorage.getItem(LEGACY_KEY_V7) || localStorage.getItem(LEGACY_KEY_V6);
-  if (!raw) return;
-  let parsed;
-  try{ parsed = JSON.parse(raw); }catch{ return; }
-  if (!Array.isArray(parsed) || parsed.length === 0) return;
-
-  const id = uid();
-  const first = { id, name: "My Career Save", createdAt: new Date().toISOString() };
-  saveSaves([first]);
-  localStorage.setItem(playersKey(id), JSON.stringify(parsed));
-}
-
-function getCurrentSave(){
-  migrateLegacyIntoFirstSaveIfNeeded();
+// ---------- multi-save (cloud) ----------
+function getSaveIdFromUrl(){
   const url = new URL(location.href);
-  const saveId = url.searchParams.get("save");
-  const saves = loadSaves();
-  const save = saves.find(s=>s.id===saveId);
-  return { saveId, save };
+  return url.searchParams.get("save");
+}
+
+let CURRENT_SAVE_ID = getSaveIdFromUrl();
+let CURRENT_SAVE = { id: CURRENT_SAVE_ID, name: "" };
+
+if (!CURRENT_SAVE_ID){
+  // If someone opens the tracker without selecting a save, send them to the dashboard.
+  location.replace(getDashboardUrl());
+}
+
+// Fetch current save (name) from API
+async function hydrateCurrentSave(){
+  try{
+    const saves = await Api.listSaves();
+    const found = saves.find(s => s.id === CURRENT_SAVE_ID);
+    if (!found){
+      location.replace(getDashboardUrl());
+      return false;
+    }
+    CURRENT_SAVE = found;
+    return true;
+  }catch(err){
+    console.error(err);
+    alert("Failed to load your career save. Please refresh.");
+    return false;
+  }
 }
 
 // 1 GBP = X currency units
@@ -174,19 +158,32 @@ function fmtPct(p){
   return Math.trunc(p*100) + "%";
 }
 
-// ---------- boot: save selection ----------
-const { saveId: CURRENT_SAVE_ID, save: CURRENT_SAVE } = getCurrentSave();
+// ---------- boot: save selection (cloud) ----------
+(async function boot(){
+  const ok = await hydrateCurrentSave();
+  if (!ok) return;
 
-if (!CURRENT_SAVE_ID || !CURRENT_SAVE){
-  // If someone opens the tracker without selecting a save, send them to the dashboard.
-  location.replace(getDashboardUrl());
-}
+  // Set tracker title (save name)
+  const saveTitleEl = document.getElementById("save-title");
+  if (saveTitleEl){
+    saveTitleEl.textContent = CURRENT_SAVE?.name || "Untitled";
+  }
 
-// Set tracker title + subtitle (do not change the visual system; just swap text)
-const saveTitleEl = document.getElementById("save-title");
-if (saveTitleEl && CURRENT_SAVE?.name){
-  saveTitleEl.textContent = CURRENT_SAVE.name;
-}
+  // Load transfers for this save
+  await loadPlayersFromApi();
+
+  // Now that data is loaded, render
+  updateEditName();
+  applySeniorityToForm();
+
+  if (toggleExEl) toggleExEl.checked = true;
+  showExPlayers = true;
+
+  setCurrency("GBP");
+  setSeniorityFilter("Senior");
+  updateSortIndicators();
+  render();
+})();
 
 // Title editor (updates save name)
 const editTitleBtn = document.getElementById("edit-save-title");
@@ -225,8 +222,17 @@ if (saveTitleEl && editTitleBtn){
     const next = (saveTitleEl.textContent || "").trim() || "Untitled";
     saveTitleEl.textContent = next; // normalize
     document.title = `${next} — FC26 Transfer Tracker`;
-    const updated = updateSaveName(CURRENT_SAVE_ID, next);
-    if (updated) CURRENT_SAVE.name = updated.name;
+    (async ()=>{
+      try{
+        await Api.updateSave(CURRENT_SAVE_ID, next);
+        CURRENT_SAVE.name = next;
+      }catch(err){
+        console.error(err);
+        alert("Could not rename save (AWS error). Please try again.");
+        // revert title
+        saveTitleEl.textContent = CURRENT_SAVE?.name || originalTitle || "Untitled";
+      }
+    })();
   };
 
   const cancelTitleEdit = ()=>{
@@ -249,12 +255,11 @@ if (saveTitleEl && editTitleBtn){
     if (e.key === "Escape"){ e.preventDefault(); cancelTitleEdit(); }
   });
 
-  // Live-update the save name while typing (so dashboard stays in sync)
+  // Live-update the document title while typing (no API calls until you click Done)
   saveTitleEl.addEventListener("input", ()=>{
     if (!isEditingTitle) return;
-    const next = (saveTitleEl.textContent || "").trim();
-    const updated = updateSaveName(CURRENT_SAVE_ID, next || "Untitled");
-    if (updated) CURRENT_SAVE.name = updated.name;
+    const next = (saveTitleEl.textContent || "").trim() || "Untitled";
+    document.title = `${next} — FC26 Transfer Tracker`;
   });
 
   saveTitleEl.addEventListener("blur", ()=>{
@@ -263,7 +268,7 @@ if (saveTitleEl && editTitleBtn){
 }
 
 // ---------- state ----------
-let players = loadPlayers(CURRENT_SAVE_ID);
+let players = [];
 let editingId = null;
 
 let seniorityFilter = "Senior"; // shared
@@ -320,27 +325,40 @@ const currencySeg = document.querySelector('.segmented[aria-label="Currency"]');
 const sortableHeaders = Array.from(document.querySelectorAll("th.sortable"));
 
 // ---------- persistence ----------
-function loadPlayers(saveId){
+async function loadPlayersFromApi(){
+  if(!CURRENT_SAVE_ID) { players = []; return; }
   try{
-    if(!saveId) return [];
-    const raw = localStorage.getItem(playersKey(saveId));
-    if(!raw) return [];
-    const parsed = JSON.parse(raw);
-    if(!Array.isArray(parsed)) return [];
-    return parsed.map(p => {
+    const list = await Api.listTransfers(CURRENT_SAVE_ID);
+    // Normalize fields to keep the rest of the UI logic unchanged
+    players = (Array.isArray(list) ? list : []).map(p => {
       const seniority = (p.seniority === "Youth") ? "Youth" : "Senior";
       const cost_gbp = asInt(p.cost_gbp ?? p.cost ?? 0, 0);
       const sale_gbp = asInt(p.sale_gbp ?? p.sale ?? 0, 0);
       const active = (p.active === "N") ? "N" : "Y";
       return { ...p, seniority, cost_gbp, sale_gbp, active };
     });
-  }catch{
-    return [];
+  }catch(err){
+    console.error(err);
+    alert("Failed to load transfers from AWS. Please refresh.");
+    players = [];
   }
 }
-function savePlayers(){
-  if(!CURRENT_SAVE_ID) return;
-  localStorage.setItem(playersKey(CURRENT_SAVE_ID), JSON.stringify(players));
+
+// CRUD helpers
+async function createPlayerInApi(player){
+  const payload = { ...player };
+  // Ensure id exists (backend can accept it or generate one)
+  if (!payload.id) payload.id = uid();
+  const created = await Api.createTransfer(CURRENT_SAVE_ID, payload);
+  return created || payload;
+}
+async function updatePlayerInApi(playerId, player){
+  const payload = { ...player, id: playerId };
+  const updated = await Api.updateTransfer(CURRENT_SAVE_ID, playerId, payload);
+  return updated || payload;
+}
+async function deletePlayerInApi(playerId){
+  await Api.deleteTransfer(CURRENT_SAVE_ID, playerId);
 }
 
 // ---------- edit name display ----------
@@ -603,39 +621,54 @@ function renderTotals(){
 }
 
 // ---------- events ----------
-btnAdd.addEventListener("click", ()=>{
+btnAdd.addEventListener("click", async ()=>{
   const data = readForm();
   if(!data) return;
-  players.push(data);
-  savePlayers();
 
-  // Auto-switch Senior/Youth unless currently All
-  if (seniorityFilter !== "All"){
-    setSeniorityFilter(data.seniority);
+  try{
+    // Create in AWS first (so it has an id)
+    const created = await createPlayerInApi(data);
+    players.push(created);
+
+    // Auto-switch Senior/Youth unless currently All
+    if (seniorityFilter !== "All"){
+      setSeniorityFilter(created.seniority);
+    }
+    lastFlashId = created.id;
+
+    clearForm();
+    render();
+  }catch(err){
+    console.error(err);
+    alert("Could not add player (AWS error). Please try again.");
   }
-  lastFlashId = data.id;
-
-  clearForm();
-  render();
 });
 
-btnUpdate.addEventListener("click", ()=>{
+btnUpdate.addEventListener("click", async ()=>{
   if(!editingId) return;
   const data = readForm();
   if(!data) return;
+
   const idx = players.findIndex(p=>p.id===editingId);
   if(idx === -1) return;
 
-  players[idx] = { ...data, id: editingId, createdAt: players[idx].createdAt || Date.now() };
-  savePlayers();
+  const next = { ...data, id: editingId, createdAt: players[idx].createdAt || Date.now() };
 
-  if (seniorityFilter !== "All"){
-    setSeniorityFilter(players[idx].seniority);
+  try{
+    const updated = await updatePlayerInApi(editingId, next);
+    players[idx] = { ...players[idx], ...updated };
+
+    if (seniorityFilter !== "All"){
+      setSeniorityFilter(players[idx].seniority);
+    }
+    lastFlashId = editingId;
+
+    clearForm();
+    render();
+  }catch(err){
+    console.error(err);
+    alert("Could not update player (AWS error). Please try again.");
   }
-  lastFlashId = editingId;
-
-  clearForm();
-  render();
 });
 
 btnClear.addEventListener("click", ()=>{
@@ -651,13 +684,21 @@ btnClear.addEventListener("click", ()=>{
 
 btnCancel.addEventListener("click", ()=>clearForm());
 
-btnReset.addEventListener("click", ()=>{
-  const ok = confirm("Reset everything? This deletes all players from this device.");
+btnReset.addEventListener("click", async ()=>{
+  const ok = confirm("Reset everything? This deletes all players from this career save.");
   if(!ok) return;
-  players = [];
-  savePlayers();
-  clearForm();
-  render();
+
+  try{
+    // Delete all transfers in AWS for this save
+    const ids = players.map(p=>p.id).filter(Boolean);
+    await Promise.all(ids.map(id => deletePlayerInApi(id)));
+    players = [];
+    clearForm();
+    render();
+  }catch(err){
+    console.error(err);
+    alert("Could not reset (AWS error). Please try again.");
+  }
 });
 
 rowsEl.addEventListener("click", (e)=>{
@@ -672,10 +713,15 @@ rowsEl.addEventListener("click", (e)=>{
   if(action==="delete"){
     const ok = confirm(`Delete ${displayName(p)}?`);
     if(!ok) return;
-    players = players.filter(x=>x.id!==id);
-    savePlayers();
-    if(editingId===id) clearForm();
-    render();
+    try{
+      await deletePlayerInApi(id);
+      players = players.filter(x=>x.id!==id);
+      if(editingId===id) clearForm();
+      render();
+    }catch(err){
+      console.error(err);
+      alert("Could not delete (AWS error). Please try again.");
+    }
   }
 });
 
@@ -701,6 +747,7 @@ importFile.addEventListener("change", async ()=>{
     const text = await file.text();
     const parsed = JSON.parse(text);
     if(!Array.isArray(parsed)) throw new Error("Invalid file format");
+    const prevIds = players.map(p=>p.id).filter(Boolean);
     players = parsed.map(x=>{
       const seniority = (x.seniority === "Youth") ? "Youth" : "Senior";
       const cost_gbp = asInt(x.cost_gbp ?? x.cost ?? 0, 0);
@@ -720,7 +767,11 @@ importFile.addEventListener("change", async ()=>{
         createdAt: Number.isFinite(Number(x.createdAt)) ? Number(x.createdAt) : Date.now(),
       };
     });
-    savePlayers();
+    // Replace all transfers in AWS with the imported list
+    await Promise.all(prevIds.map(id => deletePlayerInApi(id)));
+    const created = await Promise.all(players.map(p => createPlayerInApi(p)));
+    players = created;
+
     clearForm();
     render();
   }catch(err){
@@ -804,13 +855,4 @@ function clearForm(){
 }
 
 // ---------- init ----------
-updateEditName();
-applySeniorityToForm();
-
-if (toggleExEl) toggleExEl.checked = true;
-showExPlayers = true;
-
-setCurrency("GBP");
-setSeniorityFilter("Senior");
-updateSortIndicators();
-render();
+// (Bootstrapped in async boot() above)
