@@ -1,4 +1,16 @@
+// ✅ Require login before doing anything
+(async function boot(){
+  const ok = await Auth.requireLogin("index.html");
+  if (!ok) return;
+  initDashboard().catch(err => {
+    console.error(err);
+    alert("Dashboard failed to load. Check console.");
+  });
+})();
+
 // FC26 Transfer Tracker — Dashboard (multi-save)
+
+async function initDashboard(){
 
 const SAVES_KEY = "fc26_transfer_tracker_saves_v1";
 const SAVE_PREFIX = "fc26_transfer_tracker_save_v1_";
@@ -214,3 +226,5 @@ rowsEl.addEventListener("input", (e)=>{
 // Boot
 migrateLegacyIfNeeded();
 render();
+
+} // end initDashboard
