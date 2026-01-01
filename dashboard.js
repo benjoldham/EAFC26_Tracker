@@ -1,259 +1,254 @@
-// dashboard.js — Dashboard now uses AWS API instead of localStorage.
-// UI stays the same; only data source changes.
-
-(async function boot() {
+// ✅ Require login before doing anything
+(async function boot(){
   const ok = await Auth.requireLogin("index.html");
   if (!ok) return;
-
-  try {
-    await initDashboard();
-  } catch (err) {
+  initDashboard().catch(err => {
     console.error(err);
     alert("Dashboard failed to load. Check console.");
-  }
+  });
 })();
 
-async function initDashboard() {
-  // ---- Find UI elements (non-destructive; works even if some are missing) ----
-  const addBtn =
-    document.querySelector("#addSaveBtn") ||
-    document.querySelector("[data-add-save]") ||
-    document.querySelector("button");
+// FC26 Transfer Tracker — Dashboard (multi-save, cloud)
 
-  const rowsEl =
-    document.querySelector("#savesRows") ||
-    document.querySelector("#careerSavesRows") ||
-    document.querySelector("tbody");
+async function initDashboard(){
 
-  const emptyStateEl =
-    document.querySelector("#emptyState") ||
-    document.querySelector("[data-empty-state]");
+  // Local legacy keys (for optional import)
+  const LEGACY_KEY_V7 = "fc26_transfer_tracker_v7";
+  const LEGACY_KEY_V6 = "fc26_transfer_tracker_v6";
 
-  const logoutBtn =
-    document.querySelector("#logoutBtn") ||
-    document.querySelector("[data-logout]");
+  function asInt(v,fallback=0){ const n=Number(v); return Number.isFinite(n) ? Math.trunc(n) : fallback; }
+  function profitGBP(p){ return asInt(p.sale_gbp ?? p.sale ?? 0,0) - asInt(p.cost_gbp ?? p.cost ?? 0,0); }
 
-  if (logoutBtn) {
-    logoutBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      Auth.logout();
-    });
+  // Money abbrev (GBP only on dashboard)
+  function fmtMoneyAbbrevGBP(gbp){
+    const sym = "£";
+    const sign = gbp < 0 ? "-" : "";
+    const abs = Math.abs(gbp || 0);
+    const format = (val, suffix)=>{
+      const absVal = Math.abs(val);
+      let str;
+      if (absVal >= 100) str = String(Math.round(val));
+      else if (absVal >= 10) str = String(Math.round(val));
+      else str = String(Math.round(val * 10) / 10).replace(/\.0$/, "");
+      return sign + sym + str + suffix;
+    };
+    if (abs >= 1_000_000_000) return format(abs / 1_000_000_000, "B");
+    if (abs >= 1_000_000) return format(abs / 1_000_000, "M");
+    if (abs >= 1_000) return format(abs / 1_000, "K");
+    return sign + sym + Math.round(abs).toLocaleString("en-GB");
   }
 
-  // ---- State ----
-  let saves = [];
+  function fmtDate(iso){
+    if(!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-GB", { year:"numeric", month:"short", day:"2-digit" });
+  }
+
+  function escapeHtml(str){
+    return String(str)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  const $ = (id)=>document.getElementById(id);
+  const rowsEl = $("save-rows");
+  const emptyStateEl = $("empty-state");
+  const btnAdd = $("btn-add-save");
+
   let editingSaveId = null;
   let editingDraftName = "";
 
-  // ---- Helpers ----
-  function escapeHtml(str) {
-    return String(str ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+  // Cache
+  let savesCache = [];
+  const statsCache = new Map(); // saveId -> { count, profit, loading, error }
+
+  async function fetchSaves(){
+    savesCache = await Api.listSaves();
+    // Sort newest first
+    savesCache = (Array.isArray(savesCache) ? savesCache : []).slice().sort((a,b)=>{
+      const da = new Date(a.createdAt||0).getTime();
+      const db = new Date(b.createdAt||0).getTime();
+      return db - da;
+    });
   }
 
-  function fmtDate(iso) {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return String(iso);
-    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
-  }
+  async function ensureStats(saveId){
+    if (statsCache.has(saveId)) return;
+    statsCache.set(saveId, { loading:true, count:0, profit:0 });
 
-  function toNumber(val) {
-    const n = Number(val);
-    return Number.isFinite(n) ? n : 0;
-  }
-
-  // Try to calculate profit if transfers are returned
-  function profitFromTransfers(transfers) {
-    let sum = 0;
-    for (const t of transfers || []) {
-      // Support a few possible field names
-      const cost =
-        toNumber(t.costGbp) ||
-        toNumber(t.costGBP) ||
-        toNumber(t.cost) ||
-        0;
-
-      const sale =
-        toNumber(t.saleGbp) ||
-        toNumber(t.saleGBP) ||
-        toNumber(t.sale) ||
-        0;
-
-      sum += (sale - cost);
+    try{
+      const transfers = await Api.listTransfers(saveId);
+      const list = Array.isArray(transfers) ? transfers : [];
+      const profit = list.reduce((sum,p)=> sum + profitGBP(p), 0);
+      statsCache.set(saveId, { loading:false, count:list.length, profit });
+    }catch(err){
+      console.error(err);
+      statsCache.set(saveId, { loading:false, error:true, count:0, profit:0 });
     }
-    return sum;
+    render(); // update the row once stats arrive
   }
 
-  async function refresh() {
-    saves = await Api.listSaves();
-
-    // Normalize if backend returns {items:[...]}
-    if (saves && typeof saves === "object" && Array.isArray(saves.items)) {
-      saves = saves.items;
-    }
-    if (!Array.isArray(saves)) saves = [];
-
-    await render();
-  }
-
-  async function render() {
-    if (!rowsEl) return;
-
+  function render(){
     rowsEl.innerHTML = "";
+    emptyStateEl.style.display = savesCache.length ? "none" : "block";
 
-    if (emptyStateEl) {
-      emptyStateEl.style.display = saves.length ? "none" : "block";
-    }
+    for (const s of savesCache){
+      const stats = statsCache.get(s.id);
+      if (!stats) ensureStats(s.id);
 
-    // Optional: calculate per-save counts/profit (requires extra API calls).
-    // If you don’t want extra calls, set SHOW_SUMMARY=false.
-    const SHOW_SUMMARY = true;
+      const countCell = stats?.loading ? "…" : String(stats?.count ?? 0);
+      const profitVal = stats?.loading ? null : (stats?.profit ?? 0);
+      const profitCell = stats?.loading ? "…" : fmtMoneyAbbrevGBP(profitVal);
 
-    let summaries = {};
-    if (SHOW_SUMMARY && saves.length) {
-      // Parallel fetch transfers for each save (can be slower if many saves)
-      const results = await Promise.allSettled(
-        saves.map(async (s) => {
-          const transfers = await Api.listTransfers(s.id);
-          const arr = (transfers && transfers.items) ? transfers.items : transfers;
-          const list = Array.isArray(arr) ? arr : [];
-          return {
-            id: s.id,
-            count: list.length,
-            profit: profitFromTransfers(list),
-          };
-        })
-      );
-
-      for (const r of results) {
-        if (r.status === "fulfilled") summaries[r.value.id] = r.value;
-      }
-    }
-
-    for (const s of saves) {
       const tr = document.createElement("tr");
-      const name = s.name || "Untitled";
-
-      const summary = summaries[s.id] || { count: "—", profit: "—" };
-
-      const isEditing = editingSaveId === s.id;
-
       tr.innerHTML = `
-        <td>
-          ${
-            isEditing
-              ? `<input class="save-name-input" data-name-input="${escapeHtml(s.id)}" value="${escapeHtml(editingDraftName)}" />`
-              : `<strong>${escapeHtml(name)}</strong>`
-          }
+        <td>${s.id === editingSaveId
+          ? `<input class="save-name-input" data-name-input="${escapeHtml(s.id)}" value="${escapeHtml(editingDraftName)}" />`
+          : `<strong>${escapeHtml(s.name || "Untitled")}</strong>`}
         </td>
-        <td class="val-muted">${escapeHtml(fmtDate(s.createdAt || s.created_at))}</td>
-        <td class="num">${escapeHtml(summary.count)}</td>
-        <td class="num ${typeof summary.profit === "number" ? (summary.profit >= 0 ? "v-pos" : "v-neg") : ""}">
-          ${
-            typeof summary.profit === "number"
-              ? escapeHtml(summary.profit.toLocaleString())
-              : escapeHtml(summary.profit)
-          }
-        </td>
-        <td class="actions">
-          ${
-            isEditing
-              ? `
-                <button class="btn btn-small" data-save-rename="${escapeHtml(s.id)}">Save</button>
-                <button class="btn btn-small" data-save-cancel="${escapeHtml(s.id)}">Cancel</button>
-              `
-              : `
-                <button class="btn btn-small" data-save-open="${escapeHtml(s.id)}">Open</button>
-                <button class="btn btn-small" data-save-edit="${escapeHtml(s.id)}">Edit</button>
-                <button class="btn btn-small btn-danger" data-save-delete="${escapeHtml(s.id)}">Delete</button>
-              `
-          }
+        <td class="val-muted">${escapeHtml(fmtDate(s.createdAt))}</td>
+        <td class="num">${countCell}</td>
+        <td class="num ${profitVal == null ? "" : (profitVal >= 0 ? "val-pos" : "val-neg")}">${profitCell}</td>
+        <td class="num">
+          <div class="row-actions">
+            ${s.id === editingSaveId ? `
+              <button class="icon-btn" data-save="${escapeHtml(s.id)}" type="button" title="Save">Save</button>
+              <button class="icon-btn" data-cancel="${escapeHtml(s.id)}" type="button" title="Cancel">Cancel</button>
+            ` : `
+              <a class="icon-btn" href="./tracker.html?save=${encodeURIComponent(s.id)}" title="Open">Open</a>
+              <button class="icon-btn" data-edit="${escapeHtml(s.id)}" type="button" title="Edit name">Edit</button>
+            `}
+            <button class="icon-btn danger" data-del="${escapeHtml(s.id)}" type="button" title="Delete">Delete</button>
+          </div>
         </td>
       `;
       rowsEl.appendChild(tr);
     }
   }
 
-  // ---- Events ----
+  // Optional: one-time import from old localStorage (only if cloud has no saves)
+  async function importLegacyIfCloudEmpty(){
+    try{
+      await fetchSaves();
+      if (savesCache.length) return;
 
-  if (addBtn) {
-    addBtn.addEventListener("click", async () => {
-      const name = prompt("Career save name:");
-      if (!name) return;
+      const raw = localStorage.getItem(LEGACY_KEY_V7) || localStorage.getItem(LEGACY_KEY_V6);
+      if (!raw) return;
 
-      await Api.createSave(name.trim());
-      await refresh();
-    });
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.length) return;
+
+      const created = await Api.createSave("Imported save");
+      const saveId = created?.id;
+      if (!saveId) return;
+
+      await Promise.all(parsed.map(p => Api.createTransfer(saveId, {
+        ...p,
+        id: String(p.id || (Math.random().toString(16).slice(2) + Date.now().toString(16))),
+      })));
+
+      localStorage.removeItem(LEGACY_KEY_V7);
+      localStorage.removeItem(LEGACY_KEY_V6);
+    }catch(err){
+      console.error("Legacy import failed", err);
+    }
   }
 
-  if (rowsEl) {
-    rowsEl.addEventListener("click", async (e) => {
-      const openBtn = e.target.closest("[data-save-open]");
-      const editBtn = e.target.closest("[data-save-edit]");
-      const renameBtn = e.target.closest("[data-save-rename]");
-      const cancelBtn = e.target.closest("[data-save-cancel]");
-      const delBtn = e.target.closest("[data-save-delete]");
+  btnAdd.addEventListener("click", async ()=>{
+    const name = (prompt("Career save name?", "Barcelona") || "").trim();
+    if (!name) return;
 
-      if (openBtn) {
-        const id = openBtn.dataset.saveOpen;
-        window.location.href = `./tracker.html?save=${encodeURIComponent(id)}`;
-        return;
+    try{
+      const created = await Api.createSave(name);
+      if (!created?.id) throw new Error("No save id returned");
+      location.href = `./tracker.html?save=${encodeURIComponent(created.id)}`;
+    }catch(err){
+      console.error(err);
+      alert("Could not create save (AWS error). Please try again.");
+    }
+  });
+
+  rowsEl.addEventListener("click", async (e)=>{
+    // Start editing
+    const editBtn = e.target.closest("button[data-edit]");
+    if (editBtn){
+      const id = editBtn.dataset.edit;
+      const save = savesCache.find(s=>s.id===id);
+      editingSaveId = id;
+      editingDraftName = (save?.name || "").trim();
+      render();
+      setTimeout(()=>{
+        const inp = rowsEl.querySelector(`input[data-name-input="${CSS.escape(id)}"]`);
+        if (inp){ inp.focus(); inp.select(); }
+      }, 0);
+      return;
+    }
+
+    // Cancel editing
+    const cancelBtn = e.target.closest("button[data-cancel]");
+    if (cancelBtn){
+      editingSaveId = null;
+      editingDraftName = "";
+      render();
+      return;
+    }
+
+    // Save rename
+    const saveBtn = e.target.closest("button[data-save]");
+    if (saveBtn){
+      const id = saveBtn.dataset.save;
+      const nextName = (editingDraftName || "").trim() || "Untitled";
+      try{
+        await Api.updateSave(id, nextName);
+        // update cache
+        const idx = savesCache.findIndex(s=>s.id===id);
+        if (idx !== -1) savesCache[idx] = { ...savesCache[idx], name: nextName || "Untitled" };
+      }catch(err){
+        console.error(err);
+        alert("Could not rename save (AWS error). Please try again.");
       }
+      editingSaveId = null;
+      editingDraftName = "";
+      render();
+      return;
+    }
 
-      if (editBtn) {
-        const id = editBtn.dataset.saveEdit;
-        editingSaveId = id;
-        const found = saves.find((x) => x.id === id);
-        editingDraftName = found ? (found.name || "") : "";
-        await render();
-        return;
-      }
+    // Delete
+    const delBtn = e.target.closest("button[data-del]");
+    if (!delBtn) return;
+    const id = delBtn.dataset.del;
+    const save = savesCache.find(s=>s.id===id);
+    const label = save?.name ? `\"${save.name}\"` : "this save";
+    if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
 
-      if (cancelBtn) {
+    try{
+      await Api.deleteSave(id);
+      savesCache = savesCache.filter(s=>s.id!==id);
+      statsCache.delete(id);
+      if (editingSaveId === id){
         editingSaveId = null;
         editingDraftName = "";
-        await render();
-        return;
       }
+      render();
+    }catch(err){
+      console.error(err);
+      alert("Could not delete save (AWS error). Please try again.");
+    }
+  });
 
-      if (renameBtn) {
-        const id = renameBtn.dataset.saveRename;
-        const newName = (editingDraftName || "").trim();
-        if (!newName) {
-          alert("Please enter a name.");
-          return;
-        }
-        await Api.updateSave(id, newName);
-        editingSaveId = null;
-        editingDraftName = "";
-        await refresh();
-        return;
-      }
+  rowsEl.addEventListener("input", (e)=>{
+    const inp = e.target.closest("input[data-name-input]");
+    if (!inp) return;
+    const id = inp.dataset.nameInput;
+    if (id !== editingSaveId) return;
+    editingDraftName = inp.value;
+  });
 
-      if (delBtn) {
-        const id = delBtn.dataset.saveDelete;
-        const ok = confirm("Delete this career save? This will remove its transfers too.");
-        if (!ok) return;
-        await Api.deleteSave(id);
-        await refresh();
-        return;
-      }
-    });
-
-    rowsEl.addEventListener("input", (e) => {
-      const inp = e.target.closest("input[data-name-input]");
-      if (!inp) return;
-      const id = inp.dataset.nameInput;
-      if (id !== editingSaveId) return;
-      editingDraftName = inp.value;
-    });
-  }
-
-  // ---- Load initial data ----
-  await refresh();
+  await importLegacyIfCloudEmpty();
+  await fetchSaves();
+  render();
 }
