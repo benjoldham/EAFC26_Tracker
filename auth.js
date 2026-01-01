@@ -7,10 +7,10 @@ const Auth = (() => {
   // ✅ EDIT THESE 4 VALUES (copy from Cognito + your Amplify domain)
   const CONFIG = {
     // Example: https://your-domain.auth.us-east-1.amazoncognito.com
-    cognitoDomain: "https://YOUR_COGNITO_DOMAIN.auth.us-east-1.amazoncognito.com",
+    cognitoDomain: "https://main.d38idh1saq8gux.amplifyapp.com.auth.us-east-1.amazoncognito.com",
 
     // Cognito App client ID (NOT secret)
-    clientId: "YOUR_APP_CLIENT_ID",
+    clientId: "4h6ch2jh93i4e2ncc4a7s076df",
 
     // Must match Cognito App client callback URL EXACTLY
     // Example: https://main.xxxxx.amplifyapp.com/auth.html
