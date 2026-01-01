@@ -1,1 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Signing in…</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="container" style="padding-top:40px;">
+    <div class="panel">
+      <h2 style="margin:0 0 8px;">Signing you in…</h2>
+      <p class="sub" style="margin:0;">Please wait.</p>
+    </div>
+  </main>
+
+  <script src="./auth.js"></script>
+  <script>
+    // This exchanges the Cognito "code" for tokens and stores them
+    Auth.handleCallback().catch(err => {
+      console.error(err);
+      alert("Login failed. Check console for details.");
+    });
+  </script>
+</body>
+</html>
 
