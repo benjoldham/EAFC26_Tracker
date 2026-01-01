@@ -136,7 +136,7 @@ btnAdd.addEventListener("click", ()=>{
   saves.push({ id, name, createdAt: new Date().toISOString() });
   saveSaves(saves);
   localStorage.setItem(playersKey(id), JSON.stringify([]));
-  location.href = `./tracker.html?save=${encodeURIComponent(id)}`;
+  location.href = `./tracker/?save=${encodeURIComponent(id)}`;
 });
 
 rowsEl.addEventListener("click", (e)=>{

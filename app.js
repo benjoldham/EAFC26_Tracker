@@ -2,6 +2,13 @@
 // Exchange rates source: exchangerate-api.com (open.er-api.com) base GBP.
 // Rates last updated: Tue, 23 Dec 2025 00:02:31 +0000.
 
+
+function getDashboardUrl(){
+  // Works whether this page is /tracker/ or root
+  const p = window.location.pathname || "";
+  if (p.includes("/tracker/") || p.endsWith("/tracker")) return "../index.html";
+  return "./index.html";
+}
 // Multi-save storage
 const SAVES_KEY = "fc26_transfer_tracker_saves_v1";
 const SAVE_PREFIX = "fc26_transfer_tracker_save_v1_";
@@ -172,7 +179,7 @@ const { saveId: CURRENT_SAVE_ID, save: CURRENT_SAVE } = getCurrentSave();
 
 if (!CURRENT_SAVE_ID || !CURRENT_SAVE){
   // If someone opens the tracker without selecting a save, send them to the dashboard.
-  location.replace("./index.html");
+  location.replace(getDashboardUrl());
 }
 
 // Set tracker title + subtitle (do not change the visual system; just swap text)
