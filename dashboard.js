@@ -1,4 +1,6 @@
-// ✅ Require login before doing anything
+// dashboard.js — Dashboard now uses AWS API instead of localStorage.
+// UI stays the same; only data source changes.
+
 (async function boot() {
   const ok = await Auth.requireLogin("index.html");
   if (!ok) return;
@@ -11,67 +13,41 @@
   }
 })();
 
-// FC26 Transfer Tracker — Dashboard (multi-save) — AWS-backed (no localStorage)
-
 async function initDashboard() {
-  // UI state
+  // ---- Find UI elements (non-destructive; works even if some are missing) ----
+  const addBtn =
+    document.querySelector("#addSaveBtn") ||
+    document.querySelector("[data-add-save]") ||
+    document.querySelector("button");
+
+  const rowsEl =
+    document.querySelector("#savesRows") ||
+    document.querySelector("#careerSavesRows") ||
+    document.querySelector("tbody");
+
+  const emptyStateEl =
+    document.querySelector("#emptyState") ||
+    document.querySelector("[data-empty-state]");
+
+  const logoutBtn =
+    document.querySelector("#logoutBtn") ||
+    document.querySelector("[data-logout]");
+
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      Auth.logout();
+    });
+  }
+
+  // ---- State ----
+  let saves = [];
   let editingSaveId = null;
   let editingDraftName = "";
 
-  // Cached saves from API
-  let savesCache = [];
-
-  const $ = (id) => document.getElementById(id);
-  const rowsEl = $("save-rows");
-  const emptyStateEl = $("empty-state");
-  const btnAdd = $("btn-add-save");
-
-  function asInt(v, fallback = 0) {
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : fallback;
-  }
-
-  function profitGBPFromPlayerRow(p) {
-    // support either schema:
-    // 1) p.cost_gbp / p.sale_gbp (your current local schema)
-    // 2) p.cost / p.sale (if you store already in GBP)
-    const cost = asInt(p.cost_gbp ?? p.cost ?? 0, 0);
-    const sale = asInt(p.sale_gbp ?? p.sale ?? 0, 0);
-    return sale - cost;
-  }
-
-  function fmtDate(iso) {
-    try {
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return "";
-      return d.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
-    } catch {
-      return "";
-    }
-  }
-
-  function fmtMoneyAbbrevGBP(amountGBP) {
-    const sym = "£";
-    const n = Number(amountGBP) || 0;
-    const abs = Math.abs(n);
-    const sign = n < 0 ? "-" : "";
-
-    const format = (val, suffix) => {
-      const absVal = Math.abs(val);
-      let str;
-      if (absVal >= 10) str = String(Math.round(val));
-      else str = String(Math.round(val * 10) / 10).replace(/\.0$/, "");
-      return sign + sym + str + suffix;
-    };
-
-    if (abs >= 1_000_000_000) return format(abs / 1_000_000_000, "B");
-    if (abs >= 1_000_000) return format(abs / 1_000_000, "M");
-    if (abs >= 1_000) return format(abs / 1_000, "K");
-    return sign + sym + Math.round(abs).toLocaleString("en-GB");
-  }
-
+  // ---- Helpers ----
   function escapeHtml(str) {
-    return String(str)
+    return String(str ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
@@ -79,214 +55,205 @@ async function initDashboard() {
       .replaceAll("'", "&#039;");
   }
 
-  async function fetchSavesFromApi() {
-    // Expect: [{id,name,createdAt, playerCount?, profit_gbp?}, ...]
-    const saves = await Api.get("/saves");
-    if (!Array.isArray(saves)) return [];
-    return saves;
+  function fmtDate(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
   }
 
-  async function enrichSavesIfMissingStats(saves) {
-    // If API doesn’t provide playerCount/profit, compute by calling transfers endpoint per save.
-    // This keeps dashboard working even before you add stats server-side.
-    const needsStats = saves.some(
-      (s) => typeof s.playerCount === "undefined" || typeof s.profit_gbp === "undefined"
-    );
-    if (!needsStats) return saves;
-
-    const enriched = await Promise.all(
-      saves.map(async (s) => {
-        // already has stats
-        if (typeof s.playerCount !== "undefined" && typeof s.profit_gbp !== "undefined") return s;
-
-        try {
-          const transfers = await Api.get(`/saves/${encodeURIComponent(s.id)}/transfers`);
-          const list = Array.isArray(transfers) ? transfers : [];
-          const profit = list.reduce((sum, p) => sum + profitGBPFromPlayerRow(p), 0);
-          return {
-            ...s,
-            playerCount: list.length,
-            profit_gbp: profit,
-          };
-        } catch (e) {
-          console.warn("Failed to fetch transfers for stats:", s.id, e);
-          return {
-            ...s,
-            playerCount: s.playerCount ?? 0,
-            profit_gbp: s.profit_gbp ?? 0,
-          };
-        }
-      })
-    );
-
-    return enriched;
+  function toNumber(val) {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : 0;
   }
 
-  async function refreshAndRender() {
-    // 1) load
-    const rawSaves = await fetchSavesFromApi();
+  // Try to calculate profit if transfers are returned
+  function profitFromTransfers(transfers) {
+    let sum = 0;
+    for (const t of transfers || []) {
+      // Support a few possible field names
+      const cost =
+        toNumber(t.costGbp) ||
+        toNumber(t.costGBP) ||
+        toNumber(t.cost) ||
+        0;
 
-    // 2) sort newest first
-    const sorted = rawSaves.slice().sort((a, b) => {
-      const da = new Date(a.createdAt || 0).getTime();
-      const db = new Date(b.createdAt || 0).getTime();
-      return db - da;
-    });
+      const sale =
+        toNumber(t.saleGbp) ||
+        toNumber(t.saleGBP) ||
+        toNumber(t.sale) ||
+        0;
 
-    // 3) ensure stats exist
-    savesCache = await enrichSavesIfMissingStats(sorted);
-
-    // 4) render
-    render();
+      sum += (sale - cost);
+    }
+    return sum;
   }
 
-  function render() {
+  async function refresh() {
+    saves = await Api.listSaves();
+
+    // Normalize if backend returns {items:[...]}
+    if (saves && typeof saves === "object" && Array.isArray(saves.items)) {
+      saves = saves.items;
+    }
+    if (!Array.isArray(saves)) saves = [];
+
+    await render();
+  }
+
+  async function render() {
+    if (!rowsEl) return;
+
     rowsEl.innerHTML = "";
-    emptyStateEl.style.display = savesCache.length ? "none" : "block";
 
-    for (const s of savesCache) {
-      const profit = asInt(s.profit_gbp ?? 0, 0);
-      const count = asInt(s.playerCount ?? 0, 0);
+    if (emptyStateEl) {
+      emptyStateEl.style.display = saves.length ? "none" : "block";
+    }
 
+    // Optional: calculate per-save counts/profit (requires extra API calls).
+    // If you don’t want extra calls, set SHOW_SUMMARY=false.
+    const SHOW_SUMMARY = true;
+
+    let summaries = {};
+    if (SHOW_SUMMARY && saves.length) {
+      // Parallel fetch transfers for each save (can be slower if many saves)
+      const results = await Promise.allSettled(
+        saves.map(async (s) => {
+          const transfers = await Api.listTransfers(s.id);
+          const arr = (transfers && transfers.items) ? transfers.items : transfers;
+          const list = Array.isArray(arr) ? arr : [];
+          return {
+            id: s.id,
+            count: list.length,
+            profit: profitFromTransfers(list),
+          };
+        })
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled") summaries[r.value.id] = r.value;
+      }
+    }
+
+    for (const s of saves) {
       const tr = document.createElement("tr");
+      const name = s.name || "Untitled";
+
+      const summary = summaries[s.id] || { count: "—", profit: "—" };
+
+      const isEditing = editingSaveId === s.id;
+
       tr.innerHTML = `
-        <td>${
-          s.id === editingSaveId
-            ? `<input class="save-name-input" type="text" value="${escapeHtml(
-                editingDraftName
-              )}" data-name-input="${escapeHtml(s.id)}" />`
-            : `<strong>${escapeHtml(s.name || "Untitled")}</strong>`
-        }</td>
-        <td class="val-muted">${escapeHtml(fmtDate(s.createdAt))}</td>
-        <td class="num">${count}</td>
-        <td class="num ${profit >= 0 ? "val-pos" : "val-neg"}">${fmtMoneyAbbrevGBP(profit)}</td>
-        <td class="num">
-          <div class="row-actions">
-            ${
-              s.id === editingSaveId
-                ? `
-                  <button class="icon-btn" data-save="${escapeHtml(s.id)}" type="button" title="Save">Save</button>
-                  <button class="icon-btn" data-cancel="${escapeHtml(s.id)}" type="button" title="Cancel">Cancel</button>
-                `
-                : `
-                  <a class="icon-btn" href="./tracker.html?save=${encodeURIComponent(
-                    s.id
-                  )}" title="Open">Open</a>
-                  <button class="icon-btn" data-edit="${escapeHtml(
-                    s.id
-                  )}" type="button" title="Edit name">Edit</button>
-                `
-            }
-            <button class="icon-btn danger" data-del="${escapeHtml(
-              s.id
-            )}" type="button" title="Delete">Delete</button>
-          </div>
+        <td>
+          ${
+            isEditing
+              ? `<input class="save-name-input" data-name-input="${escapeHtml(s.id)}" value="${escapeHtml(editingDraftName)}" />`
+              : `<strong>${escapeHtml(name)}</strong>`
+          }
+        </td>
+        <td class="val-muted">${escapeHtml(fmtDate(s.createdAt || s.created_at))}</td>
+        <td class="num">${escapeHtml(summary.count)}</td>
+        <td class="num ${typeof summary.profit === "number" ? (summary.profit >= 0 ? "v-pos" : "v-neg") : ""}">
+          ${
+            typeof summary.profit === "number"
+              ? escapeHtml(summary.profit.toLocaleString())
+              : escapeHtml(summary.profit)
+          }
+        </td>
+        <td class="actions">
+          ${
+            isEditing
+              ? `
+                <button class="btn btn-small" data-save-rename="${escapeHtml(s.id)}">Save</button>
+                <button class="btn btn-small" data-save-cancel="${escapeHtml(s.id)}">Cancel</button>
+              `
+              : `
+                <button class="btn btn-small" data-save-open="${escapeHtml(s.id)}">Open</button>
+                <button class="btn btn-small" data-save-edit="${escapeHtml(s.id)}">Edit</button>
+                <button class="btn btn-small btn-danger" data-save-delete="${escapeHtml(s.id)}">Delete</button>
+              `
+          }
         </td>
       `;
       rowsEl.appendChild(tr);
     }
   }
 
-  // Add new save -> API -> redirect to tracker
-  btnAdd.addEventListener("click", async () => {
-    const name = (prompt("Career save name?", "Barcelona") || "").trim();
-    if (!name) return;
+  // ---- Events ----
 
-    try {
-      // Expect API returns {id,name,createdAt,...}
-      const created = await Api.post("/saves", { name });
-      const id = created?.id;
-      if (!id) throw new Error("API did not return an id for the new save.");
-      location.href = `./tracker.html?save=${encodeURIComponent(id)}`;
-    } catch (err) {
-      console.error(err);
-      alert("Failed to create save. Check console.");
-    }
-  });
+  if (addBtn) {
+    addBtn.addEventListener("click", async () => {
+      const name = prompt("Career save name:");
+      if (!name) return;
 
-  // Row actions
-  rowsEl.addEventListener("click", async (e) => {
-    // Start editing
-    const editBtn = e.target.closest("button[data-edit]");
-    if (editBtn) {
-      const id = editBtn.dataset.edit;
-      const save = savesCache.find((s) => s.id === id);
-      editingSaveId = id;
-      editingDraftName = (save?.name || "").trim();
-      render();
+      await Api.createSave(name.trim());
+      await refresh();
+    });
+  }
 
-      // focus after render
-      setTimeout(() => {
-        const inp = rowsEl.querySelector(`input[data-name-input="${CSS.escape(id)}"]`);
-        if (inp) {
-          inp.focus();
-          inp.select();
+  if (rowsEl) {
+    rowsEl.addEventListener("click", async (e) => {
+      const openBtn = e.target.closest("[data-save-open]");
+      const editBtn = e.target.closest("[data-save-edit]");
+      const renameBtn = e.target.closest("[data-save-rename]");
+      const cancelBtn = e.target.closest("[data-save-cancel]");
+      const delBtn = e.target.closest("[data-save-delete]");
+
+      if (openBtn) {
+        const id = openBtn.dataset.saveOpen;
+        window.location.href = `./tracker.html?save=${encodeURIComponent(id)}`;
+        return;
+      }
+
+      if (editBtn) {
+        const id = editBtn.dataset.saveEdit;
+        editingSaveId = id;
+        const found = saves.find((x) => x.id === id);
+        editingDraftName = found ? (found.name || "") : "";
+        await render();
+        return;
+      }
+
+      if (cancelBtn) {
+        editingSaveId = null;
+        editingDraftName = "";
+        await render();
+        return;
+      }
+
+      if (renameBtn) {
+        const id = renameBtn.dataset.saveRename;
+        const newName = (editingDraftName || "").trim();
+        if (!newName) {
+          alert("Please enter a name.");
+          return;
         }
-      }, 0);
-      return;
-    }
-
-    // Cancel editing
-    const cancelBtn = e.target.closest("button[data-cancel]");
-    if (cancelBtn) {
-      editingSaveId = null;
-      editingDraftName = "";
-      render();
-      return;
-    }
-
-    // Save edited name -> API
-    const saveBtn = e.target.closest("button[data-save]");
-    if (saveBtn) {
-      const id = saveBtn.dataset.save;
-      const nextName = (editingDraftName || "").trim();
-
-      try {
-        await Api.put(`/saves/${encodeURIComponent(id)}`, { name: nextName || "Untitled" });
+        await Api.updateSave(id, newName);
         editingSaveId = null;
         editingDraftName = "";
-        await refreshAndRender();
-      } catch (err) {
-        console.error(err);
-        alert("Failed to rename save. Check console.");
-      }
-      return;
-    }
-
-    // Delete -> API
-    const delBtn = e.target.closest("button[data-del]");
-    if (!delBtn) return;
-
-    const id = delBtn.dataset.del;
-    const save = savesCache.find((s) => s.id === id);
-    const label = save?.name ? `"${save.name}"` : "this save";
-    if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
-
-    try {
-      await Api.del(`/saves/${encodeURIComponent(id)}`);
-
-      // If we were editing this row, reset state
-      if (editingSaveId === id) {
-        editingSaveId = null;
-        editingDraftName = "";
+        await refresh();
+        return;
       }
 
-      await refreshAndRender();
-    } catch (err) {
-      console.error(err);
-      alert("Failed to delete save. Check console.");
-    }
-  });
+      if (delBtn) {
+        const id = delBtn.dataset.saveDelete;
+        const ok = confirm("Delete this career save? This will remove its transfers too.");
+        if (!ok) return;
+        await Api.deleteSave(id);
+        await refresh();
+        return;
+      }
+    });
 
-  // Live edit text while in edit mode
-  rowsEl.addEventListener("input", (e) => {
-    const inp = e.target.closest("input[data-name-input]");
-    if (!inp) return;
-    const id = inp.dataset.nameInput;
-    if (id !== editingSaveId) return;
-    editingDraftName = inp.value;
-  });
+    rowsEl.addEventListener("input", (e) => {
+      const inp = e.target.closest("input[data-name-input]");
+      if (!inp) return;
+      const id = inp.dataset.nameInput;
+      if (id !== editingSaveId) return;
+      editingDraftName = inp.value;
+    });
+  }
 
-  // Boot
-  await refreshAndRender();
+  // ---- Load initial data ----
+  await refresh();
 }
