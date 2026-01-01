@@ -5,7 +5,7 @@
 const Auth = (() => {
   // ✅ FILL THESE IN
   const CONFIG = {
-    cognitoDomain: "https://main.d38idh1saq8gux.amplifyapp.com.auth.us-east-1.amazoncognito.com",
+    cognitoDomain: "https://us-east-122ffnaib9.auth.us-east-1.amazoncognito.com",
     clientId: "4h6ch2jh93i4e2ncc4a7s076df",
     redirectUri: "https://main.d38idh1saq8gux.amplifyapp.com/auth.html",
     logoutRedirectUri: "https://main.d38idh1saq8gux.amplifyapp.com",
