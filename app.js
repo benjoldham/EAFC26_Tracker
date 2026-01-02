@@ -3,10 +3,8 @@
 // Rates last updated: Tue, 23 Dec 2025 00:02:31 +0000.
 
 // ✅ Require login (Cognito) before allowing access to tracker
-if (typeof Auth !== "undefined" && !Auth.isLoggedIn() && !/\/auth\.html$/.test(location.pathname)) {
-  Auth.login(location.pathname + location.search);
-  throw new Error("Redirecting to login...");
-}
+// NOTE: Login enforcement is handled inside the boot() below after we ensure auth.js is loaded.
+
 
 
 function getDashboardUrl(){
@@ -15,6 +13,34 @@ function getDashboardUrl(){
   if (p.includes("/tracker/") || p.endsWith("/tracker")) return "../index.html";
   return "./index.html";
 }
+
+// --- Ensure auth.js and api.js are available even on /tracker/ (where relative paths break)
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    // already loaded?
+    const existing = Array.from(document.getElementsByTagName('script')).find(s => s.src === src);
+    if (existing) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+async function ensureBackendDeps() {
+  // Use absolute paths so they work from /tracker/ and from /
+  const authSrc = `${location.origin}/auth.js`;
+  const apiSrc  = `${location.origin}/api.js`;
+  if (!window.Auth) {
+    try { await loadScriptOnce(authSrc); } catch (e) { console.error(e); }
+  }
+  if (!window.Api) {
+    try { await loadScriptOnce(apiSrc); } catch (e) { console.error(e); }
+  }
+}
+
 // ---------- multi-save (cloud) ----------
 function getSaveIdFromUrl(){
   const url = new URL(location.href);
@@ -160,6 +186,17 @@ function fmtPct(p){
 
 // ---------- boot: save selection (cloud) ----------
 (async function boot(){
+  // Ensure auth.js + api.js are available (important on /tracker/)
+  await ensureBackendDeps();
+  if (window.Auth && !Auth.isLoggedIn() && !location.pathname.endsWith('/auth.html')) {
+    Auth.login(location.pathname + location.search);
+    return;
+  }
+  if (!window.Api) {
+    alert('Backend scripts failed to load (api.js). Please refresh.');
+    return;
+  }
+
   const ok = await hydrateCurrentSave();
   if (!ok) return;
 
