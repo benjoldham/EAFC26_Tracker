@@ -701,7 +701,7 @@ btnReset.addEventListener("click", async ()=>{
   }
 });
 
-rowsEl.addEventListener("click", (e)=>{
+rowsEl.addEventListener("click", async (e)=>{
   const btn = e.target.closest("button");
   if(!btn) return;
   const action = btn.dataset.action;
