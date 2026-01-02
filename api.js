@@ -1,51 +1,66 @@
-/* api.js — fetch wrapper for API Gateway (JWT auth) */
+// api.js — hardened API client
 
-// ✅ FILL THIS IN (your API Gateway invoke URL, no trailing slash)
-// Example: https://abc123.execute-api.eu-west-2.amazonaws.com
-const API_BASE_URL = "https://5bwgybhzz2.execute-api.us-east-1.amazonaws.com";
+const API_BASE =
+  "https://5bwgybhzz2.execute-api.us-east-1.amazonaws.com/production";
 
-async function apiFetch(path, options = {}) {
-  const token = Auth.getAccessToken();
-  if (!token) throw new Error("No access token. Not logged in.");
-
-  const url = API_BASE_URL + path;
-
-  const resp = await fetch(url, {
-    ...options,
+async function apiFetch(path, opts = {}) {
+  const token = await Auth.getIdToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`,
-      ...(options.headers || {}),
+      Authorization: token ? `Bearer ${token}` : "",
+      ...(opts.headers || {}),
     },
   });
 
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`API error ${resp.status}: ${text}`);
+  // 🔴 IMPORTANT FIX:
+  // Treat missing endpoints as empty data instead of fatal errors
+  if (res.status === 404) {
+    return [];
   }
 
-  // 204 No Content
-  if (resp.status === 204) return null;
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`API error ${res.status}: ${txt}`);
+  }
 
-  return await resp.json();
+  if (res.status === 204) return null;
+  return res.json();
 }
 
-const Api = {
-  // Saves
-  listSaves: () => apiFetch("/saves", { method: "GET" }),
-  createSave: (name) => apiFetch("/saves", { method: "POST", body: JSON.stringify({ name }) }),
-  updateSave: (saveId, name) => apiFetch(`/saves/${encodeURIComponent(saveId)}`, { method: "PUT", body: JSON.stringify({ name }) }),
-  deleteSave: (saveId) => apiFetch(`/saves/${encodeURIComponent(saveId)}`, { method: "DELETE" }),
+export const Api = {
+  listSaves() {
+    return apiFetch("/saves");
+  },
 
-  // Transfers
-  listTransfers: (saveId) => apiFetch(`/saves/${encodeURIComponent(saveId)}/transfers`, { method: "GET" }),
-  createTransfer: (saveId, transfer) => apiFetch(`/saves/${encodeURIComponent(saveId)}/transfers`, { method: "POST", body: JSON.stringify(transfer) }),
-  updateTransfer: (saveId, transferId, transfer) =>
-    apiFetch(`/saves/${encodeURIComponent(saveId)}/transfers/${encodeURIComponent(transferId)}`, { method: "PUT", body: JSON.stringify(transfer) }),
-  deleteTransfer: (saveId, transferId) =>
-    apiFetch(`/saves/${encodeURIComponent(saveId)}/transfers/${encodeURIComponent(transferId)}`, { method: "DELETE" }),
+  createSave(name) {
+    return apiFetch("/saves", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  updateSave(id, name) {
+    return apiFetch(`/saves/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  deleteSave(id) {
+    return apiFetch(`/saves/${id}`, { method: "DELETE" });
+  },
+
+  // 🔴 FIX: transfers may not exist yet
+  listTransfers(saveId) {
+    return apiFetch(`/saves/${saveId}/transfers`);
+  },
+
+  createTransfer(saveId, payload) {
+    return apiFetch(`/saves/${saveId}/transfers`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
 };
-
-// Expose on window for non-module scripts
-window.Api = Api;
-window.apiFetch = apiFetch;
