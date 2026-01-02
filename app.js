@@ -201,7 +201,6 @@ function fmtPct(p){
   if (!ok) return;
 
   // Set tracker title (save name)
-  const saveTitleEl = document.getElementById("save-title");
   if (saveTitleEl){
     saveTitleEl.textContent = CURRENT_SAVE?.name || "Untitled";
   }
