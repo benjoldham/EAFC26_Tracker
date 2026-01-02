@@ -76,21 +76,38 @@ async function initDashboard(){
     });
   }
 
-  async function ensureStats(saveId){
-    if (statsCache.has(saveId)) return;
-    statsCache.set(saveId, { loading:true, count:0, profit:0 });
+async function ensureStats(saveId){
+  if (statsCache.has(saveId)) return;
+  statsCache.set(saveId, { loading:true, count:0, profit:0 });
 
-    try{
-      const transfers = await Api.listTransfers(saveId);
-      const list = Array.isArray(transfers) ? transfers : [];
-      const profit = list.reduce((sum,p)=> sum + profitGBP(p), 0);
-      statsCache.set(saveId, { loading:false, count:list.length, profit });
-    }catch(err){
-      console.error(err);
-      statsCache.set(saveId, { loading:false, error:true, count:0, profit:0 });
-    }
-    render(); // update the row once stats arrive
+  try{
+    const transfers = await Api.listTransfers(saveId);
+    const list = Array.isArray(transfers) ? transfers : [];
+
+    const profit = list.reduce((sum,p)=>{
+      const cost = Number(p.cost_gbp ?? p.cost ?? 0);
+      const sale = Number(p.sale_gbp ?? p.sale ?? 0);
+      return sum + (sale - cost);
+    }, 0);
+
+    statsCache.set(saveId, {
+      loading:false,
+      count:list.length,
+      profit
+    });
+  }catch(err){
+    // 🔴 HARDENING FIX — NEVER crash dashboard
+    console.warn("Stats unavailable for save", saveId, err);
+    statsCache.set(saveId, {
+      loading:false,
+      count:0,
+      profit:0
+    });
   }
+
+  render();
+}
+
 
   function render(){
     rowsEl.innerHTML = "";
