@@ -46,3 +46,6 @@ const Api = {
     apiFetch(`/saves/${encodeURIComponent(saveId)}/transfers/${encodeURIComponent(transferId)}`, { method: "DELETE" }),
 };
 
+// Expose on window for non-module scripts
+window.Api = Api;
+window.apiFetch = apiFetch;
